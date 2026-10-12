@@ -4,8 +4,11 @@ import cv2, numpy as np, requests
 from ultralytics import YOLO
 
 PORT = 5000
-SERVER = os.environ.get("SERVER", "https://cmpt-398-website.onrender.com/frame")
-TOKEN = "q03948256034h95-179348n1-t9348yqperiu"
+SERVER = os.environ.get(
+    "SERVER",
+    "https://cmpt-398-website.onrender.com/frame"
+)
+TOKEN = os.environ.get("FRAME_TOKEN", "")
 FALLBACKS = ["192.168.4.1"]
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deck_ip.txt")
 
