@@ -4,8 +4,8 @@ import cv2, numpy as np, requests
 from ultralytics import YOLO
 
 PORT = 5000
-SERVER = os.environ.get("SERVER", "http://127.0.0.1:3000/frame")
-TOKEN = os.environ.get("FRAME_TOKEN", "")
+SERVER = os.environ.get("SERVER", "https://cmpt-398-website.onrender.com/frame")
+TOKEN = "q03948256034h95-179348n1-t9348yqperiu"
 FALLBACKS = ["192.168.4.1"]
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deck_ip.txt")
 
@@ -87,7 +87,7 @@ def deck_reader():
         s = socket.socket()
         t0, count = time.time(), 0
         try:
-            s.settimeout(5)
+            s.settimeout(None)
             s.connect((ip, PORT))
             print("connected to deck at", ip)
             with open(CACHE, "w") as f: f.write(ip)
@@ -107,6 +107,8 @@ def deck_reader():
                 with lock:
                     latest = img
                 count += 1
+                if count % 30 == 0:
+                    print(f"Received {count} frames; latest image: {img.shape}")
         except Exception as e:
             print(f"deck error after {time.time()-t0:.0f}s / {count} frames: {e} - reconnecting")
             s.close()
