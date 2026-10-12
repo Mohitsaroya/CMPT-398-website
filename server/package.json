@@ -1,0 +1,22 @@
+{
+  "name": "face-demo",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "dev": "concurrently -n api,bridge,ui \"node server.js\" \"python -u bridge.py webcam\" \"npm --prefix ../fire-ui run dev\"",
+    "demo": "concurrently -n api,bridge \"node server.js\" \"python -u bridge.py deck\"",
+    "build": "npm --prefix ../fire-ui run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}

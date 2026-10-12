@@ -1,0 +1,20 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Frontend build output (Render/Railway rebuilds it)
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Model weights and local state
+best.pt
+deck_ip.txt
+
+# Secrets
+.env
+.env.*
