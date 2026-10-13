@@ -1,5 +1,5 @@
 import sys, os, socket, struct, base64, threading, time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import cv2, numpy as np, requests
 from ultralytics import YOLO
 import queue
@@ -147,27 +147,58 @@ def local_frames(src):
         if not ok: break
         yield f
 
-session = requests.Session()
 send_q = queue.Queue(maxsize=1)
+uploader_state = threading.local()
+MAX_IN_FLIGHT_UPLOADS = 3
+
+def post_frame(payload):
+    session = getattr(uploader_state, "session", None)
+    if session is None:
+        session = requests.Session()
+        uploader_state.session = session
+    response = session.post(SERVER, json=payload,
+                            headers={"x-token": TOKEN}, timeout=5)
+    response.raise_for_status()
+    return response.status_code
 
 def uploader():
     uploaded = 0
+    superseded = 0
     window_start = time.monotonic()
-    while True:
-        payload = send_q.get()
-        try:
-            response = session.post(SERVER, json=payload,
-                                    headers={"x-token": TOKEN}, timeout=5)
-            response.raise_for_status()
-            uploaded += 1
-            now = time.monotonic()
-            if now - window_start >= 5:
-                print(f"[uploaded] {uploaded / (now - window_start):.1f} fps")
-                uploaded = 0
-                window_start = now
-        except requests.RequestException as e:
-            print("post failed:", e)
+    in_flight = set()
 
+    while True:
+        for future in tuple(in_flight):
+            if not future.done():
+                continue
+            in_flight.remove(future)
+            try:
+                if future.result() == 204:
+                    uploaded += 1
+                else:
+                    superseded += 1
+            except requests.RequestException as e:
+                print("post failed:", e)
+
+        now = time.monotonic()
+        if now - window_start >= 5:
+            elapsed = now - window_start
+            print(f"[uploaded] {uploaded / elapsed:.1f} fps | "
+                  f"superseded {superseded}")
+            uploaded = superseded = 0
+            window_start = now
+
+        if len(in_flight) >= MAX_IN_FLIGHT_UPLOADS:
+            wait(in_flight, return_when=FIRST_COMPLETED)
+            continue
+
+        try:
+            payload = send_q.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        in_flight.add(upload_executor.submit(post_frame, payload))
+
+upload_executor = ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT_UPLOADS)
 threading.Thread(target=uploader, daemon=True).start()
 
 def enqueue(payload):
@@ -184,6 +215,7 @@ def main():
 
     WINDOW = 30
     n = 0
+    frame_seq = time.time_ns() // 1000
     t_win = time.time()
     infer_t = enc_t = post_t = 0.0
     for img in frames:
@@ -195,7 +227,9 @@ def main():
         b_ = time.perf_counter()
 
         ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        payload = {"image": base64.b64encode(jpg).decode(), "detections": dets}
+        frame_seq += 1
+        payload = {"image": base64.b64encode(jpg).decode(),
+                   "detections": dets, "frameSeq": frame_seq}
         c = time.perf_counter()
 
         enqueue(payload)

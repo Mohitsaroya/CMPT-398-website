@@ -14,11 +14,16 @@ const TOKEN = process.env.FRAME_TOKEN;
 
 let seq = 0;
 let latest = null;
+let latestFrameSeq = 0;
 
 app.post('/frame', (req, res) => {
   if (TOKEN && req.get('x-token') !== TOKEN) return res.sendStatus(401);
 
   const body = req.body;
+  if (Number.isSafeInteger(body.frameSeq)) {
+    if (body.frameSeq <= latestFrameSeq) return res.sendStatus(202);
+    latestFrameSeq = body.frameSeq;
+  }
   body.seq = ++seq;
   body.serverTs = Date.now();
   latest = JSON.stringify(body);
