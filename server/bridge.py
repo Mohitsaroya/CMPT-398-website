@@ -151,11 +151,20 @@ session = requests.Session()
 send_q = queue.Queue(maxsize=1)
 
 def uploader():
+    uploaded = 0
+    window_start = time.monotonic()
     while True:
         payload = send_q.get()
         try:
-            session.post(SERVER, json=payload,
-                         headers={"x-token": TOKEN}, timeout=5)
+            response = session.post(SERVER, json=payload,
+                                    headers={"x-token": TOKEN}, timeout=5)
+            response.raise_for_status()
+            uploaded += 1
+            now = time.monotonic()
+            if now - window_start >= 5:
+                print(f"[uploaded] {uploaded / (now - window_start):.1f} fps")
+                uploaded = 0
+                window_start = now
         except requests.RequestException as e:
             print("post failed:", e)
 
@@ -177,7 +186,6 @@ def main():
     n = 0
     t_win = time.time()
     infer_t = enc_t = post_t = 0.0
-    last_send = 0.0
     for img in frames:
         a = time.perf_counter()
         r = model(img, conf=0.25, verbose=False)[0]
@@ -190,10 +198,7 @@ def main():
         payload = {"image": base64.b64encode(jpg).decode(), "detections": dets}
         c = time.perf_counter()
 
-        now = time.time()
-        if now - last_send > 0.3:
-            enqueue(payload)
-            last_send = now
+        enqueue(payload)
         d = time.perf_counter()
 
         infer_t += b_ - a
