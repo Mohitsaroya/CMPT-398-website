@@ -89,6 +89,7 @@ def deck_reader():
             continue
         s = socket.socket()
         t0, count = time.time(), 0
+        t_last = t0
         try:
             s.settimeout(None)
             s.connect((ip, PORT))
@@ -111,7 +112,10 @@ def deck_reader():
                     latest = img
                 count += 1
                 if count % 30 == 0:
-                    print(f"Received {count} frames; latest image: {img.shape}")
+                    now = time.time()
+                    print(f"[camera] {30/(now - t_last):.1f} fps | frame {img.shape}")
+                    t_last = now
+
         except Exception as e:
             print(f"deck error after {time.time()-t0:.0f}s / {count} frames: {e} - reconnecting")
             s.close()
@@ -139,19 +143,43 @@ def local_frames(src):
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "deck"
     frames = deck_frames() if src == "deck" else local_frames(src)
+
+    WINDOW = 30
     n = 0
+    t_win = time.time()
+    infer_t = enc_t = post_t = 0.0
+
     for img in frames:
+        a = time.perf_counter()
         r = model(img, conf=0.25, verbose=False)[0]
         dets = [{"label": model.names[int(b.cls)],
                  "conf": float(b.conf),
                  "box": [float(v) for v in b.xyxy[0]]} for b in r.boxes]
+        b_ = time.perf_counter()
+
         ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        payload = {"image": base64.b64encode(jpg).decode(), "detections": dets}
+        c = time.perf_counter()
+
         try:
-            requests.post(SERVER, timeout=5, headers={"x-token": TOKEN}, json={
-                "image": base64.b64encode(jpg).decode(),
-                "detections": dets})
+            requests.post(SERVER, timeout=5, headers={"x-token": TOKEN}, json=payload)
         except requests.RequestException as e:
             print("post failed:", e)
+        d = time.perf_counter()
+
+        infer_t += b_ - a
+        enc_t += c - b_
+        post_t += d - c
         n += 1
+
+        if n % WINDOW == 0:
+            now = time.time()
+            fps = WINDOW / (now - t_win)
+            print(f"[processed] {fps:.1f} fps | per frame: "
+                  f"infer {infer_t/WINDOW*1000:.0f} ms, "
+                  f"encode {enc_t/WINDOW*1000:.0f} ms, "
+                  f"post {post_t/WINDOW*1000:.0f} ms")
+            t_win = now
+            infer_t = enc_t = post_t = 0.0
     
 main()
