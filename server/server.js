@@ -12,12 +12,41 @@ const wss = new WebSocketServer({ server });
 
 const TOKEN = process.env.FRAME_TOKEN;
 
+let seq = 0;
+let latest = null;
+
 app.post('/frame', (req, res) => {
   if (TOKEN && req.get('x-token') !== TOKEN) return res.sendStatus(401);
-  const msg = JSON.stringify(req.body);
-  wss.clients.forEach(c => c.readyState === 1 && c.send(msg));
+
+  const body = req.body;
+  body.seq = ++seq;
+  body.serverTs = Date.now();
+  latest = JSON.stringify(body);
+
+  wss.clients.forEach(c => {
+    if (c.readyState !== 1) return;
+    if (c.bufferedAmount > 1_000_000) return;
+    c.send(latest);
+  });
+
   res.sendStatus(204);
-  console.log('frame received');
+  if (seq % 100 === 0) console.log(`frames received: ${seq}, clients: ${wss.clients.size}`);
 });
+
+wss.on('connection', ws => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  if (latest) ws.send(latest); 
+});
+
+// Heartbeat: keeps Render's proxy from closing idle sockets and
+// removes dead ones (e.g. a phone that locked its screen).
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 25000);
 
 server.listen(process.env.PORT || 3000, () => console.log('listening'));
