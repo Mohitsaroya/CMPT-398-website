@@ -2,6 +2,7 @@ import sys, os, socket, struct, base64, threading, time
 from concurrent.futures import ThreadPoolExecutor
 import cv2, numpy as np, requests
 from ultralytics import YOLO
+import queue
 
 PORT = 5000
 SERVER = os.environ.get(
@@ -140,6 +141,28 @@ def local_frames(src):
         if not ok: break
         yield f
 
+session = requests.Session()
+send_q = queue.Queue(maxsize=1)
+
+def uploader():
+    while True:
+        payload = send_q.get()
+        try:
+            session.post(SERVER, json=payload,
+                         headers={"x-token": TOKEN}, timeout=5)
+        except requests.RequestException as e:
+            print("post failed:", e)
+
+threading.Thread(target=uploader, daemon=True).start()
+
+def enqueue(payload):
+    try:
+        send_q.put_nowait(payload)
+    except queue.Full:
+        try: send_q.get_nowait()
+        except queue.Empty: pass
+        send_q.put_nowait(payload)
+
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "deck"
     frames = deck_frames() if src == "deck" else local_frames(src)
@@ -161,10 +184,7 @@ def main():
         payload = {"image": base64.b64encode(jpg).decode(), "detections": dets}
         c = time.perf_counter()
 
-        try:
-            requests.post(SERVER, timeout=5, headers={"x-token": TOKEN}, json=payload)
-        except requests.RequestException as e:
-            print("post failed:", e)
+        enqueue(payload)
         d = time.perf_counter()
 
         infer_t += b_ - a
