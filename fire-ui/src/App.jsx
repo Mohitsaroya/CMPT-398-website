@@ -30,7 +30,7 @@ export default function App() {
           const top = d.detections.reduce((a, b) => (a.conf > b.conf ? a : b))
           setStatus(`${top.label.toUpperCase()} detected, ${(top.conf * 100).toFixed(0)}%`)
         } else {
-          setStatus('No face')
+          setStatus('No fire detected')
         }
       }
       img.src = 'data:image/jpeg;base64,' + d.image
