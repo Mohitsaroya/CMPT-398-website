@@ -91,6 +91,7 @@ def deck_reader():
         s = socket.socket()
         t0, count = time.time(), 0
         t_last = t0
+        last_frame = time.time()
         try:
             s.settimeout(10)
             s.connect((ip, PORT))
@@ -112,6 +113,11 @@ def deck_reader():
                 with lock:
                     latest = img
                 count += 1
+                gap = time.time() - last_frame
+                last_frame = time.time()
+                if gap > 0.5:
+                    print(f"[camera] stall: {gap:.1f}s without a frame")
+
                 if count % 30 == 0:
                     now = time.time()
                     print(f"[camera] {30/(now - t_last):.1f} fps | frame {img.shape}")
@@ -171,7 +177,7 @@ def main():
     n = 0
     t_win = time.time()
     infer_t = enc_t = post_t = 0.0
-
+    last_send = 0.0
     for img in frames:
         a = time.perf_counter()
         r = model(img, conf=0.25, verbose=False)[0]
@@ -184,7 +190,10 @@ def main():
         payload = {"image": base64.b64encode(jpg).decode(), "detections": dets}
         c = time.perf_counter()
 
-        enqueue(payload)
+        now = time.time()
+        if now - last_send > 0.3:
+            enqueue(payload)
+            last_send = now
         d = time.perf_counter()
 
         infer_t += b_ - a
