@@ -70,7 +70,7 @@ def find_deck():
     if os.path.exists(CACHE):
         known.append(open(CACHE).read().strip())
     for ip in known + FALLBACKS:
-        if ip and port_open(ip, 1.0):
+        if ip:
             return ip
     print("deck not at known addresses, scanning subnet...")
     found = scan_subnet()
@@ -91,7 +91,7 @@ def deck_reader():
         t0, count = time.time(), 0
         t_last = t0
         try:
-            s.settimeout(None)
+            s.settimeout(10)
             s.connect((ip, PORT))
             print("connected to deck at", ip)
             with open(CACHE, "w") as f: f.write(ip)
