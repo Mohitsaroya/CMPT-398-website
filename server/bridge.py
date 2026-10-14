@@ -70,13 +70,15 @@ def find_deck():
     if len(sys.argv) > 2: known.append(sys.argv[2])
     if os.path.exists(CACHE):
         known.append(open(CACHE).read().strip())
-    for ip in known + FALLBACKS:
-        if ip:
+    for ip in dict.fromkeys(known + FALLBACKS):
+        if ip and looks_like_deck(ip):
             return ip
+        if ip:
+            print(f"no deck frame stream at {ip}, checking other addresses...")
     print("deck not at known addresses, scanning subnet...")
     found = scan_subnet()
     if len(found) == 1:
-        return found[0]
+        return found[0] if looks_like_deck(found[0]) else None
     return next((ip for ip in found if looks_like_deck(ip)), None)
 
 # ---------- frame reader (background thread) ----------
@@ -124,7 +126,8 @@ def deck_reader():
                     t_last = now
 
         except Exception as e:
-            print(f"deck error after {time.time()-t0:.0f}s / {count} frames: {e} - reconnecting")
+            print(f"deck error at {ip} after {time.time()-t0:.0f}s / "
+                  f"{count} frames: {e} - reconnecting")
             s.close()
             time.sleep(1)
             
