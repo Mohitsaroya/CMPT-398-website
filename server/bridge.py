@@ -54,82 +54,85 @@ def scan_subnet():
         res = list(ex.map(lambda ip: ip if port_open(ip, 0.5) else None, ips))
     return [ip for ip in res if ip]
 
-def looks_like_deck(ip):
-    """Confirm the host sends the AI Deck frame header (magic byte 0xBC)."""
-    try:
-        with socket.create_connection((ip, PORT), timeout=3) as s:
-            s.settimeout(3)
-            length, _, _ = struct.unpack('<HBB', rx(s, 4))
-            if not 2 < length < 64: return False
-            return rx(s, length - 2)[0] == 0xBC
-    except Exception:
-        return False
-
 def find_deck():
+    if len(sys.argv) > 2:
+        return [sys.argv[2]]
+
     known = []
-    if len(sys.argv) > 2: known.append(sys.argv[2])
     if os.path.exists(CACHE):
         known.append(open(CACHE).read().strip())
-    for ip in dict.fromkeys(known + FALLBACKS):
-        if ip and looks_like_deck(ip):
-            return ip
-        if ip:
-            print(f"no deck frame stream at {ip}, checking other addresses...")
-    print("deck not at known addresses, scanning subnet...")
-    found = scan_subnet()
-    if len(found) == 1:
-        return found[0] if looks_like_deck(found[0]) else None
-    return next((ip for ip in found if looks_like_deck(ip)), None)
+    return [ip for ip in dict.fromkeys(known + FALLBACKS) if ip]
+
+def receive_frame(s):
+    length, _, _ = struct.unpack('<HBB', rx(s, 4))
+    if not 13 <= length < 64:
+        raise ValueError(f"invalid deck frame header length: {length}")
+    magic, w, h, depth, fmt, size = struct.unpack('<BHHBBI', rx(s, length - 2))
+    if magic != 0xBC:
+        raise ValueError(f"unexpected deck frame magic: {magic:#x}")
+
+    data = bytearray()
+    while len(data) < size:
+        length, _, _ = struct.unpack('<HBB', rx(s, 4))
+        data.extend(rx(s, length - 2))
+    arr = np.frombuffer(data, np.uint8)
+    if fmt == 0:
+        return cv2.cvtColor(arr.reshape(h, w), cv2.COLOR_BayerBG2BGR)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+def stream_from_deck(ip):
+    global latest
+    s = socket.socket()
+    t0, count = time.time(), 0
+    t_last = t0
+    last_frame = time.time()
+    try:
+        s.settimeout(10)
+        s.connect((ip, PORT))
+        print(f"TCP connected to {ip}:{PORT}; waiting for first frame...")
+        img = receive_frame(s)
+        print("connected to deck at", ip)
+        with open(CACHE, "w") as f:
+            f.write(ip)
+
+        while True:
+            with lock:
+                latest = img
+            count += 1
+            gap = time.time() - last_frame
+            last_frame = time.time()
+            if gap > 0.5:
+                print(f"[camera] stall: {gap:.1f}s without a frame")
+
+            if count % 30 == 0:
+                now = time.time()
+                print(f"[camera] {30/(now - t_last):.1f} fps | frame {img.shape}")
+                t_last = now
+            img = receive_frame(s)
+    except Exception as e:
+        print(f"deck error at {ip} after {time.time()-t0:.0f}s / "
+              f"{count} frames: {e} - reconnecting")
+    finally:
+        s.close()
 
 # ---------- frame reader (background thread) ----------
 def deck_reader():
-    global latest
     while True:
-        ip = find_deck()
-        if not ip:
-            print("no deck found, retrying in 3s (is it powered and on Wi-Fi?)")
-            time.sleep(3)
-            continue
-        s = socket.socket()
-        t0, count = time.time(), 0
-        t_last = t0
-        last_frame = time.time()
-        try:
-            s.settimeout(10)
-            s.connect((ip, PORT))
-            print("connected to deck at", ip)
-            with open(CACHE, "w") as f: f.write(ip)
-            while True:
-                length, _, _ = struct.unpack('<HBB', rx(s, 4))
-                magic, w, h, depth, fmt, size = struct.unpack('<BHHBBI', rx(s, length - 2))
-                if magic != 0xBC: continue
-                data = bytearray()
-                while len(data) < size:
-                    length, _, _ = struct.unpack('<HBB', rx(s, 4))
-                    data.extend(rx(s, length - 2))
-                arr = np.frombuffer(data, np.uint8)
-                if fmt == 0:
-                    img = cv2.cvtColor(arr.reshape(h, w), cv2.COLOR_BayerBG2BGR)
-                else:
-                    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                with lock:
-                    latest = img
-                count += 1
-                gap = time.time() - last_frame
-                last_frame = time.time()
-                if gap > 0.5:
-                    print(f"[camera] stall: {gap:.1f}s without a frame")
+        known = find_deck()
+        for ip in known:
+            stream_from_deck(ip)
 
-                if count % 30 == 0:
-                    now = time.time()
-                    print(f"[camera] {30/(now - t_last):.1f} fps | frame {img.shape}")
-                    t_last = now
-
-        except Exception as e:
-            print(f"deck error at {ip} after {time.time()-t0:.0f}s / "
-                  f"{count} frames: {e} - reconnecting")
-            s.close()
+        if len(sys.argv) > 2:
             time.sleep(1)
+            continue
+
+        print("deck not at known addresses, scanning subnet...")
+        found = [ip for ip in scan_subnet() if ip not in known]
+        for ip in found:
+            stream_from_deck(ip)
+
+        print("no deck found, retrying in 3s (is it powered and on Wi-Fi?)")
+        time.sleep(3)
             
 def deck_frames():
     threading.Thread(target=deck_reader, daemon=True).start()
