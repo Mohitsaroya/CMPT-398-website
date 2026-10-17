@@ -5,15 +5,14 @@ from ultralytics import YOLO
 import queue
 
 PORT = 5000
-CONNECT_TIMEOUT = 10
+CONNECT_TIMEOUT = 3
 RECEIVE_POLL_INTERVAL = 1
-FRAME_IDLE_TIMEOUT = 30
+FRAME_IDLE_TIMEOUT = 10
 SERVER = os.environ.get(
     "SERVER",
     "https://cmpt-398-website.onrender.com/frame"
 )
 TOKEN = os.environ.get("FRAME_TOKEN", "")
-FALLBACKS = ["192.168.4.1"]
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deck_ip.txt")
 
 model = YOLO("best.pt")
@@ -41,41 +40,16 @@ def rx(s, n):
         last_data = time.monotonic()
     return buf
 
-# ---------- deck discovery ----------
-def port_open(ip, timeout=0.5):
-    try:
-        with socket.create_connection((ip, PORT), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-def my_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("10.255.255.255", 1))
-        return s.getsockname()[0]
-    except OSError:
-        return None
-    finally:
-        s.close()
-
-def scan_subnet():
-    me = my_ip()
-    if not me: return []
-    prefix = me.rsplit(".", 1)[0]
-    ips = [f"{prefix}.{i}" for i in range(1, 255) if f"{prefix}.{i}" != me]
-    with ThreadPoolExecutor(64) as ex:
-        res = list(ex.map(lambda ip: ip if port_open(ip, 0.5) else None, ips))
-    return [ip for ip in res if ip]
-
 def find_deck():
     if len(sys.argv) > 2:
         return [sys.argv[2]]
 
-    known = []
     if os.path.exists(CACHE):
-        known.append(open(CACHE).read().strip())
-    return [ip for ip in dict.fromkeys(known + FALLBACKS) if ip]
+        with open(CACHE) as f:
+            ip = f.read().strip()
+        if ip:
+            return [ip]
+    return []
 
 def receive_frame(s):
     length, _, _ = struct.unpack('<HBB', rx(s, 4))
@@ -101,6 +75,10 @@ def stream_from_deck(ip):
     t_last = t0
     last_frame = time.time()
     try:
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(s, "ioctl") and hasattr(socket, "SIO_KEEPALIVE_VALS"):
+            s.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 3000, 1000))
         s.settimeout(CONNECT_TIMEOUT)
         s.connect((ip, PORT))
         s.settimeout(RECEIVE_POLL_INTERVAL)
@@ -138,21 +116,13 @@ def stream_from_deck(ip):
 # ---------- frame reader (background thread) ----------
 def deck_reader():
     while True:
-        known = find_deck()
-        for ip in known:
+        addresses = find_deck()
+        for ip in addresses:
             stream_from_deck(ip)
 
-        if len(sys.argv) > 2:
-            time.sleep(1)
-            continue
-
-        print("deck not at known addresses, scanning subnet...")
-        found = [ip for ip in scan_subnet() if ip not in known]
-        for ip in found:
-            stream_from_deck(ip)
-
-        print("no deck found, retrying in 3s (is it powered and on Wi-Fi?)")
-        time.sleep(3)
+        if not addresses:
+            print("no deck IP configured; set server/deck_ip.txt or pass it as an argument")
+        time.sleep(1)
             
 def deck_frames():
     threading.Thread(target=deck_reader, daemon=True).start()
