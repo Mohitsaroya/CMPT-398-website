@@ -5,6 +5,9 @@ from ultralytics import YOLO
 import queue
 
 PORT = 5000
+CONNECT_TIMEOUT = 10
+RECEIVE_POLL_INTERVAL = 1
+FRAME_IDLE_TIMEOUT = 30
 SERVER = os.environ.get(
     "SERVER",
     "https://cmpt-398-website.onrender.com/frame"
@@ -17,14 +20,25 @@ model = YOLO("best.pt")
 print("classes:", model.names)
 
 latest = None
+latest_frame_number = 0
+camera_frames_received = 0
 lock = threading.Lock()
 
 def rx(s, n):
     buf = bytearray()
+    last_data = time.monotonic()
     while len(buf) < n:
-        chunk = s.recv(n - len(buf))
+        try:
+            chunk = s.recv(n - len(buf))
+        except socket.timeout:
+            if time.monotonic() - last_data >= FRAME_IDLE_TIMEOUT:
+                raise TimeoutError(
+                    f"no deck data received for {FRAME_IDLE_TIMEOUT}s"
+                )
+            continue
         if not chunk: raise ConnectionError("deck closed")
         buf.extend(chunk)
+        last_data = time.monotonic()
     return buf
 
 # ---------- deck discovery ----------
@@ -81,14 +95,15 @@ def receive_frame(s):
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 def stream_from_deck(ip):
-    global latest
+    global camera_frames_received, latest, latest_frame_number
     s = socket.socket()
     t0, count = time.time(), 0
     t_last = t0
     last_frame = time.time()
     try:
-        s.settimeout(10)
+        s.settimeout(CONNECT_TIMEOUT)
         s.connect((ip, PORT))
+        s.settimeout(RECEIVE_POLL_INTERVAL)
         print(f"TCP connected to {ip}:{PORT}; waiting for first frame...")
         img = receive_frame(s)
         print("connected to deck at", ip)
@@ -97,6 +112,8 @@ def stream_from_deck(ip):
 
         while True:
             with lock:
+                camera_frames_received += 1
+                latest_frame_number = camera_frames_received
                 latest = img
             count += 1
             gap = time.time() - last_frame
@@ -106,7 +123,10 @@ def stream_from_deck(ip):
 
             if count % 30 == 0:
                 now = time.time()
-                print(f"[camera] {30/(now - t_last):.1f} fps | frame {img.shape}")
+                with lock:
+                    received = camera_frames_received
+                print(f"[camera] {30/(now - t_last):.1f} fps | "
+                      f"received={received} | frame {img.shape}")
                 t_last = now
             img = receive_frame(s)
     except Exception as e:
@@ -140,11 +160,12 @@ def deck_frames():
     while True:
         with lock:
             img = latest
+            frame_number = latest_frame_number
         if img is None or img is last:
             time.sleep(0.01)
             continue
         last = img
-        yield img
+        yield img, frame_number
 
 def local_frames(src):
     cap = cv2.VideoCapture(0 if src == "webcam" else src)
@@ -221,10 +242,21 @@ def main():
 
     WINDOW = 30
     n = 0
+    last_camera_frame_number = 0
+    skipped_before_inference = 0
     frame_seq = time.time_ns() // 1000
     t_win = time.time()
     infer_t = enc_t = post_t = 0.0
-    for img in frames:
+    for frame in frames:
+        if src == "deck":
+            img, camera_frame_number = frame
+            skipped_before_inference += max(
+                0, camera_frame_number - last_camera_frame_number - 1
+            )
+            last_camera_frame_number = camera_frame_number
+        else:
+            img = frame
+
         a = time.perf_counter()
         r = model(img, conf=0.25, verbose=False)[0]
         dets = [{"label": model.names[int(b.cls)],
@@ -249,7 +281,15 @@ def main():
         if n % WINDOW == 0:
             now = time.time()
             fps = WINDOW / (now - t_win)
-            print(f"[processed] {fps:.1f} fps | per frame: "
+            stage_counts = ""
+            if src == "deck":
+                with lock:
+                    received = camera_frames_received
+                stage_counts = (
+                    f" | camera received={received}, processed={n}, "
+                    f"skipped_before_inference={skipped_before_inference}"
+                )
+            print(f"[processed] {fps:.1f} fps{stage_counts} | per frame: "
                   f"infer {infer_t/WINDOW*1000:.0f} ms, "
                   f"encode {enc_t/WINDOW*1000:.0f} ms, "
                   f"post {post_t/WINDOW*1000:.0f} ms")
